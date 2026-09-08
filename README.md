@@ -35,10 +35,15 @@ through the same mechanism.
 
 ## Important notes
 
-- **Start/end G-code is Prusa-native**, not the stock Anycubic Klipper macros. Homing + mesh
-  leveling is a generic `G28` + `G29`, followed by a fixed prime line; `gcode_flavor` is
-  `marlin2` (Klipper firmware accepts the Marlin2 dialect). **Review the start G-code and adjust
-  the leveling/prime to match your machine before printing.**
+- **Kobra S1 G-code follows the stock Anycubic profile**: the firmware `G9111` preparation
+  macro, pressure advance, purge line, fan controls, and end parking sequence are retained.
+  It uses PrusaSlicer's `klipper` G-code flavor so process acceleration changes are emitted as
+  firmware-compatible `M204 S...` commands.
+- **ACE Pro support is single-color only.** The Kobra S1 profile emits the stock `T0` selection
+  for the first ACE feed path. It does not generate slot changes, color changes, or multicolor
+  unload/purge sequences.
+- **Kobra X still uses the generic Marlin2 converted start/end G-code.** Review its leveling and
+  prime sequence against your machine before printing.
 - **TPU** is mapped to PrusaSlicer's `FLEX` filament type (its equivalent).
 - Scope is a curated **core set**. Decorative/composite filaments (Silk, Marble, Glow, Wood,
   Metal, CF, PA6-CF, etc.) are intentionally excluded; the full source profiles are in

@@ -71,10 +71,12 @@ the print preset** (model-common values), not the printer preset.
 - Scope = core set: all 4 nozzles, all Standard/High-Quality print profiles, and
   Generic + Anycubic PLA/PLA+/PETG/ABS/ASA/TPU filaments (see `FIL_TYPES`). Widen by editing
   `FIL_TYPES` — the full source set is already vendored under `sources/`.
-- G-code rewritten to Prusa-native, `gcode_flavor: marlin2`. The `G9111` macro is replaced by
-  `G28`+`G29`+prime line (`start_gcode`/`end_gcode` in the tool). `klipper` flavor was
-  deliberately avoided — it is absent from the reference bundle, so its alpha acceptance is
-  unverified. If you change these, note firmware compatibility.
+- Kobra S1 retains the stock `G9111` preparation macro, `T0` single-color ACE selection,
+  pressure advance, purge line, fan controls, and end parking sequence. This is intentionally
+  not multicolor/ACE slot-change support. It uses `gcode_flavor: klipper` with machine limits
+  used for time estimation only, which makes PrusaSlicer emit the firmware-compatible `M204 S`
+  acceleration form. Kobra X retains the generic `G28`+`G29` conversion and
+  `gcode_flavor: marlin2`. If you change these, note firmware compatibility.
 - TPU → Prusa `FLEX` (`TPU` isn't in the reference type set).
 
 ## `tools/prusa_keys.json` (ground truth)

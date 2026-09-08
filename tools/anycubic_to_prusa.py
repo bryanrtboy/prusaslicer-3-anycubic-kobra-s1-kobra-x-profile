@@ -56,8 +56,14 @@ def num(v):
 def first(v):
     return v[0] if isinstance(v, list) and v else v
 
-# ---------------- G-code (rewritten Prusa-native, Marlin2 dialect) ------------
+# ---------------- G-code ------------------------------------------------------
 def start_gcode(P):
+    if P["token"] == "KOBRAS1":
+        return ("G9111 bedTemp=[first_layer_bed_temperature] "
+                "extruderTemp=[first_layer_temperature]\n"
+                "M117\n"
+                "M140 S[first_layer_bed_temperature] ; keep bed target after G9111\n"
+                "M104 S[first_layer_temperature] ; keep nozzle target after G9111")
     return ("M140 S[first_layer_bed_temperature] ; set bed temp\n"
             "M104 S[first_layer_temperature] ; set nozzle temp\n"
             "M190 S[first_layer_bed_temperature] ; wait for bed temp\n"
@@ -76,6 +82,23 @@ def start_gcode(P):
             "G92 E0 ; reset extruder")
 
 def end_gcode(P):
+    if P["token"] == "KOBRAS1":
+        return ("G92 E0\n"
+                "G1 E-2 F3000\n"
+                "{if max_layer_z < max_print_height-1}"
+                "G1 Z{z_offset+min(max_layer_z+2, max_print_height)} F900 ; Move print head further up"
+                "{endif}\n"
+                "G1 F12000 ; present print\n"
+                "G1 X44 ; throw_position_x\n"
+                "G1 Y270 ; throw_position_y\n"
+                "M140 S0 ; turn off heatbed\n"
+                "M104 S0 ; turn off temperature\n"
+                "M106 P1 S0 ; turn off part fan\n"
+                "M106 P2 S0 ; turn off auxiliary fan\n"
+                "M106 P3 S0 ; turn off exhaust fan\n"
+                "M84 ; disable motors\n"
+                "{if filament_type[0] == \"PLA\"}M106 P3 S204 ; post-print exhaust fan"
+                "{else}M106 P3 S179 ; post-print exhaust fan{endif}")
     return ("M104 S0 ; turn off nozzle\n"
             "M140 S0 ; turn off bed\n"
             "M107 ; turn off fan\n"
@@ -86,6 +109,31 @@ def end_gcode(P):
             "G1 X5 Y%d F6000 ; park\n" % P["park_y"] +
             "M84 ; disable motors")
 
+def s1_purge_gcode():
+    return ("; PURGE LINE\n"
+            "M204 P500\n"
+            "SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=9\n"
+            "G1 Z0.50 F900 ; for object exclusion\n"
+            "G1 X89.365 Y255 F18000\n"
+            "G1 Z0.25 F900\n"
+            "G1 E0.8 F2400\n"
+            "G1 E0.6 F2400\n"
+            "G1 F3000\n"
+            "G1 X158.835 Y255 E3.72454\n"
+            "G1 X158.835 Y255.45 E0.0252\n"
+            "G1 X89.365 Y255.45 E3.72454\n"
+            "G1 X89.365 Y255.02 E0.02305\n"
+            "G1 Z0.5 F600")
+
+def layer_gcode(P):
+    lines = [";AFTER_LAYER_CHANGE", ";[layer_z]", "G92 E0"]
+    if P["token"] == "KOBRAS1":
+        lines += [
+            "{if layer_num == 1 and (filament_type[0] == \"PLA\" or "
+            "filament_type[0] == \"FLEX\")}M106 P2 S153 ; auxiliary fan{endif}",
+        ]
+    return "\n".join(lines)
+
 # ---------------- machine -> printer preset values ---------------------------
 def conv_machine(m, P):
     v = {}
@@ -93,7 +141,7 @@ def conv_machine(m, P):
     v["bed_shape"] = m.get("printable_area", ["0x0", "%dx0" % P["bed"],
                                               "%dx%d" % (P["bed"], P["bed"]), "0x%d" % P["bed"]])
     v["max_print_height"] = num(m.get("printable_height", P["bed"]))
-    v["gcode_flavor"] = "marlin2"
+    v["gcode_flavor"] = "klipper" if P["token"] == "KOBRAS1" else "marlin2"
     v["single_extruder_multi_material"] = 0
     v["use_relative_e_distances"] = 1
     v["use_firmware_retraction"] = 0
@@ -103,12 +151,12 @@ def conv_machine(m, P):
     v["remaining_times"] = 0
     v["z_offset"] = num(first(m.get("z_offset", 0)))
     v["extruder_offset"] = ["0x0"]
-    v["machine_limits_usage"] = "emit_to_gcode"
+    v["machine_limits_usage"] = ("time_estimate_only" if P["token"] == "KOBRAS1"
+                                 else "emit_to_gcode")
     v["thumbnails"] = "320x240/PNG"
     v["start_gcode"] = start_gcode(P)
     v["end_gcode"] = end_gcode(P)
-    v["before_layer_gcode"] = ""
-    v["layer_gcode"] = ";AFTER_LAYER_CHANGE\n;[layer_z]\nG92 E0"
+    v["layer_gcode"] = layer_gcode(P)
     def lim(key):
         a = m.get(key, [])
         a = [num(x) for x in a] if isinstance(a, list) else [num(a)]
@@ -174,7 +222,7 @@ BRIM = {"auto_brim":"outer_only","brim_ears":"outer_only","outer_only":"outer_on
 SUPPORT = {"0": "none", "1": "everywhere", "false": "none", "true": "everywhere"}
 LABEL_OBJECTS = {"0": "disabled", "1": "firmware", "false": "disabled", "true": "firmware"}
 
-def conv_process(p):
+def conv_process(p, P):
     dflt_acc = num(p.get("default_acceleration", 5000)) or 5000
     v = {}
     def s(k, val):
@@ -264,13 +312,23 @@ def conv_process(p):
     s("raft_expansion", num(p.get("raft_expansion", 1.5)))
     s("raft_first_layer_density", str(p.get("raft_first_layer_density","90%")))
     s("raft_first_layer_expansion", num(p.get("raft_first_layer_expansion", 2)))
-    s("gcode_label_objects", LABEL_OBJECTS.get(str(p.get("gcode_label_objects", 1)).strip().lower(), "firmware"))
+    labels = LABEL_OBJECTS.get(str(p.get("gcode_label_objects", 1)).strip().lower(), "firmware")
+    s("gcode_label_objects", "disabled" if P["token"] == "KOBRAS1" else labels)
     return {k: val for k, val in v.items() if k in KEYS["print"]}
 
 # ---------------- filament -> filament preset values -------------------------
-def conv_filament(f, ftype):
+def fan_pwm(percent, default):
+    try:
+        return int(float(first(percent if percent is not None else default)) * 255 / 100 + 0.5)
+    except (TypeError, ValueError):
+        return int(default * 255 / 100 + 0.5)
+
+def conv_filament(f, ftype, P, nozzle_type=None):
     def g(k, d=None):
         return first(f.get(k, d))
+    def nozzle_temp(k, d):
+        suffix = {"brass": "BRASS", "hardened_steel": "HS"}.get(nozzle_type)
+        return g(f"{k}_{suffix}", g(k, d)) if suffix else g(k, d)
     v = {}
     v["filament_type"] = ftype
     v["filament_vendor"] = g("filament_vendor", "Anycubic") or "Anycubic"
@@ -279,8 +337,8 @@ def conv_filament(f, ftype):
     v["filament_max_volumetric_speed"] = num(g("filament_max_volumetric_speed", 12))
     v["filament_density"] = num(g("filament_density", 1.24))
     v["filament_cost"] = num(g("filament_cost", 20))
-    v["temperature"] = num(g("nozzle_temperature", 210))
-    v["first_layer_temperature"] = num(g("nozzle_temperature_initial_layer", 215))
+    v["temperature"] = num(nozzle_temp("nozzle_temperature", 210))
+    v["first_layer_temperature"] = num(nozzle_temp("nozzle_temperature_initial_layer", 215))
     v["bed_temperature"] = num(g("hot_plate_temp", 60))
     v["first_layer_bed_temperature"] = num(g("hot_plate_temp_initial_layer", 60))
     v["min_fan_speed"] = num(g("fan_min_speed", 100))
@@ -296,13 +354,38 @@ def conv_filament(f, ftype):
     v["filament_soluble"] = num(g("filament_soluble", 0))
     v["filament_notes"] = ""
     v["filament_colour"] = "#DDDDDD"
-    v["start_filament_gcode"] = "; filament start gcode"
+    if P["token"] == "KOBRAS1":
+        start = ["; filament start gcode",
+                 f"M106 P3 S{fan_pwm(f.get('during_print_exhaust_fan_speed'), 60)}"]
+        if str(g("enable_pressure_advance", 0)).strip().lower() in ("1", "true"):
+            start.append(f"M900 K{num(g('pressure_advance', 0))}")
+        start += ["T0", "M75", "M106 S0", "M106 P2 S0", s1_purge_gcode()]
+        v["start_filament_gcode"] = "\n".join(start)
+    else:
+        v["start_filament_gcode"] = "; filament start gcode"
     v["end_filament_gcode"] = "; filament end gcode"
     return {k: val for k, val in v.items() if k in KEYS["filament"]}
 
 # ---------------- source loading helpers -------------------------------------
 def load(path):
     return json.load(open(path))
+
+def load_resolved(path, seen=None):
+    """Resolve local Anycubic inheritance when a parent profile is vendored."""
+    seen = set() if seen is None else seen
+    if path in seen:
+        raise ValueError(f"profile inheritance cycle at {path}")
+    seen.add(path)
+    child = load(path)
+    parent_name = child.get("inherits")
+    if not parent_name:
+        return child
+    parent_path = os.path.join(os.path.dirname(path), parent_name + ".json")
+    if not os.path.exists(parent_path):
+        return child
+    merged = load_resolved(parent_path, seen)
+    merged.update(child)
+    return merged
 
 def nozzle_of(name):
     m = re.search(r"(\d\.\d+)\s*nozzle", name)
@@ -374,7 +457,7 @@ def build(spkey):
     sp = PRINTERS[spkey]
     tok = sp["token"]      # space-free identifier for ids / base_model / conditions
     label = sp["label"]    # human-facing name used in preset names
-    ver = "1.0.3"
+    ver = "1.0.4" if spkey == "s1" else "1.0.3"
     repo_root = os.path.join(BUILD, sp["vendor_id"])
     if os.path.exists(repo_root):
         shutil.rmtree(repo_root)
@@ -497,7 +580,7 @@ def build(spkey):
             concrete.append(emit_values(nzvals, 6))
         concrete.append("    variants:")
         for d in sorted(procs[nz], key=lambda x: x["name"]):
-            vals = conv_process(d)
+            vals = conv_process(d, sp)
             concrete.append(f"    - name: {leafname(d['name'], nz)}")
             concrete.append(f"      id: {gid(f'{tok}:print:{nz}:{d['name']}')}")
             concrete.append("      values:")
@@ -512,18 +595,38 @@ def build(spkey):
         cands = [fp for fp in fil_files if os.path.basename(fp).startswith(prefix + " @")]
         if not cands:
             continue
-        pref = [c for c in cands if "0.4 nozzle" in c] or cands
-        chosen[prefix] = (pref[0], ftype)
+        by_nozzle = {nozzle_of(os.path.basename(c)): c for c in cands if nozzle_of(os.path.basename(c))}
+        pref = by_nozzle.get("0.4") or cands[0]
+        chosen[prefix] = (pref, ftype, by_nozzle)
     fdocs = []
-    for ft in sorted(set(ft for _, ft in chosen.values())):
+    for ft in sorted(set(ft for _, ft, _ in chosen.values())):
         fdocs.append("\n".join(["kind: filament", f"id: '*{ft}*'", "values: {}"]))
-    for prefix, (fp, ftype) in chosen.items():
-        d = load(fp)
-        vals = conv_filament(d, ftype)
+    for prefix, (fp, ftype, by_nozzle) in chosen.items():
+        d = load_resolved(fp) if spkey == "s1" else load(fp)
+        base_nozzle = nozzle_of(os.path.basename(fp))
+        nozzle_type = machines.get(base_nozzle, {}).get("nozzle_type")
+        vals = conv_filament(d, ftype, sp, nozzle_type)
         name = f"{prefix} @{label}"
         doc = ["kind: filament", f"name: {name}", f'condition: printer.base_model == "{tok}"',
                f"id: {name}", "inherits:", f"- '*{ftype}*'", "values:"]
-        fdocs.append("\n".join(doc) + "\n" + emit_values(vals, 2))
+        doc.append(emit_values(vals, 2))
+        if spkey == "s1":
+            variants = []
+            for nz in NOZZLES:
+                nfp = by_nozzle.get(nz)
+                if not nfp or nfp == fp:
+                    continue
+                nd = load_resolved(nfp)
+                nvals = conv_filament(nd, ftype, sp, machines.get(nz, {}).get("nozzle_type"))
+                delta = {k: value for k, value in nvals.items() if vals.get(k) != value}
+                if not delta:
+                    continue
+                variants += [f"- condition: tool.nozzle_diameter == {nz}",
+                             f"  id: {gid(f'{tok}:filament:{prefix}:{nz}')}", "  values:",
+                             emit_values(delta, 4)]
+            if variants:
+                doc += ["variants:", "\n".join(variants)]
+        fdocs.append("\n".join(doc))
     write(os.path.join(vdir, f"preset-filament-{slug}.yaml"), "\n---\n".join(fdocs) + "\n")
 
     # per-version manifest.json
@@ -540,8 +643,11 @@ def build(spkey):
     write(os.path.join(vdir, "manifest.json"), json.dumps(entries))
 
     # vendor_indices.zip + <Vendor>.idx
+    release_note = ("1.0.4 Restore stock Kobra S1 firmware G-code and filament controls.\n"
+                    if spkey == "s1" else "")
     idx = (f"min_slic3r_version = 3.0.0-alpha0\n"
-           f"{ver} Re-enable HF nozzle; PNG thumbnail.\n"
+           f"{release_note}"
+           f"1.0.3 Re-enable HF nozzle; PNG thumbnail.\n"
            f"1.0.1 Space-free printer model ids so the printer appears in the wizard.\n"
            f"1.0.0 Initial release. Converted from AnycubicSlicerNext.\n")
     idx_path = os.path.join(repo_root, sp["vendor_id"] + ".idx")
