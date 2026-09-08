@@ -22,6 +22,10 @@ COLLIDE = ["common", "PLA", "PETG", "ABS", "ASA", "FLEX"]
 
 def find_pr_dir():
     base = os.path.expanduser("~/Library/Application Support")
+    exact = os.path.join(base, "PrusaSlicer3-dev", "presets", "local",
+                         "prusa-research-fff", "PrusaResearch")
+    if os.path.exists(os.path.join(exact, "vendor.yaml")):
+        return exact
     hits = glob.glob(os.path.join(base, "PrusaSlicer*", "presets", "local",
                                   "prusa-research-fff", "PrusaResearch"))
     hits = [h for h in hits if os.path.exists(os.path.join(h, "vendor.yaml"))]
@@ -50,6 +54,12 @@ def rebuild_manifest(pr):
     entries.sort(key=lambda e: e["filename"])
     json.dump(entries, open(os.path.join(pr, "manifest.json"), "w"))
 
+def strip_trailing_doc_separators(txt):
+    lines = txt.rstrip().splitlines()
+    while lines and lines[-1].strip() == "---":
+        lines.pop()
+    return "\n".join(lines).rstrip() + "\n"
+
 def revert(pr):
     # remove files we added (kobras1/kobrax presets + our assets) and our vendor.yaml block
     for f in glob.glob(os.path.join(pr, "preset-*-kobra*.yaml")):
@@ -72,6 +82,7 @@ def merge(pr):
     vy = open(vy_path).read()
     if MARK in vy:
         vy = vy[:vy.index(MARK)].rstrip() + "\n"
+    vy = strip_trailing_doc_separators(vy)
     added_docs = []
     os.makedirs(os.path.join(pr, "assets"), exist_ok=True)
 

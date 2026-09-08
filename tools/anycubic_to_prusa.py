@@ -42,8 +42,8 @@ FIL_TYPES = {
     "Anycubic TPU 95A": "FLEX", "Anycubic TPU": "FLEX",
 }
 
-def gid():
-    return base64.b64encode(os.urandom(16)).decode().rstrip("=")
+def gid(name):
+    return base64.b64encode(hashlib.sha256(name.encode("utf-8")).digest()[:16]).decode().rstrip("=")
 
 def num(v):
     s = str(v).strip()
@@ -108,7 +108,7 @@ def conv_machine(m, P):
     v["start_gcode"] = start_gcode(P)
     v["end_gcode"] = end_gcode(P)
     v["before_layer_gcode"] = ""
-    v["layer_gcode"] = ";AFTER_LAYER_CHANGE\n;[layer_z]"
+    v["layer_gcode"] = ";AFTER_LAYER_CHANGE\n;[layer_z]\nG92 E0"
     def lim(key):
         a = m.get(key, [])
         a = [num(x) for x in a] if isinstance(a, list) else [num(a)]
@@ -171,6 +171,8 @@ TOPFILL = {"monotonic":"monotonic","monotonicline":"monotoniclines","concentric"
            "zig-zag":"rectilinear","rectilinear":"rectilinear","monotoniclines":"monotoniclines"}
 BRIM = {"auto_brim":"outer_only","brim_ears":"outer_only","outer_only":"outer_only",
         "outer_and_inner":"outer_and_inner","inner_only":"inner_only","no_brim":"no_brim","":"no_brim"}
+SUPPORT = {"0": "none", "1": "everywhere", "false": "none", "true": "everywhere"}
+LABEL_OBJECTS = {"0": "disabled", "1": "firmware", "false": "disabled", "true": "firmware"}
 
 def conv_process(p):
     dflt_acc = num(p.get("default_acceleration", 5000)) or 5000
@@ -244,7 +246,7 @@ def conv_process(p):
     s("gcode_resolution", num(p.get("resolution", 0.0125)))
     s("slice_closing_radius", num(p.get("slice_closing_radius", 0.049)))
     s("dont_support_bridges", num(p.get("bridge_no_support", 0)))
-    s("support_material", num(p.get("enable_support", 0)))
+    s("support_material", SUPPORT.get(str(p.get("enable_support", 0)).strip().lower(), "none"))
     s("support_material_threshold", num(p.get("support_threshold_angle", 0)))
     s("support_material_style", "snug")
     s("support_material_pattern", "rectilinear")
@@ -262,7 +264,7 @@ def conv_process(p):
     s("raft_expansion", num(p.get("raft_expansion", 1.5)))
     s("raft_first_layer_density", str(p.get("raft_first_layer_density","90%")))
     s("raft_first_layer_expansion", num(p.get("raft_first_layer_expansion", 2)))
-    s("gcode_label_objects", num(p.get("gcode_label_objects", 1)))
+    s("gcode_label_objects", LABEL_OBJECTS.get(str(p.get("gcode_label_objects", 1)).strip().lower(), "firmware"))
     return {k: val for k, val in v.items() if k in KEYS["print"]}
 
 # ---------------- filament -> filament preset values -------------------------
@@ -448,13 +450,13 @@ def build(spkey):
     hdr = [f"id: '{dp_id}'", "kind: printer", "variants:"]
     for nz in NOZZLES:
         if nz in default_print:
-            hdr += [f"- condition: tool.nozzle_diameter == {nz}", f"  id: {gid()}",
+            hdr += [f"- condition: tool.nozzle_diameter == {nz}", f"  id: {gid(f'{tok}:default-print:{nz}')}",
                     "  values:", f"    default_print: {default_print[nz]}"]
     pp.append("\n".join(hdr))
     mv = conv_machine(base_m, sp)
-    doc2 = [f"id: {gid()}", "kind: printer", "inherits:", f"- '{dp_id}'", "variants:",
+    doc2 = [f"id: {gid(f'{tok}:printer-doc')}", "kind: printer", "inherits:", f"- '{dp_id}'", "variants:",
             f'- condition: printer.base_model == "{tok}"', f"  name: {sp['src_name']}",
-            f"  id: {gid()}", "  values:"]
+            f"  id: {gid(f'{tok}:printer:{tok}')}", "  values:"]
     pp.append("\n".join(doc2) + "\n" + emit_values(mv, 4))
     slug = tok.lower()
     write(os.path.join(vdir, f"preset-printer-{slug}.yaml"), "\n---\n".join(pp) + "\n")
@@ -463,7 +465,7 @@ def build(spkey):
     write(os.path.join(vdir, f"preset-tool-{slug}.yaml"),
           "\n".join(["kind: tool_print", f"id: common {tok}", "variants:",
                      f'- condition: printer.base_model == "{tok}"', "  name: no tool",
-                     f"  id: {gid()}"]) + "\n")
+                     f"  id: {gid(f'{tok}:tool-print:common')}"]) + "\n")
 
     # preset-print
     procs = {nz: [] for nz in NOZZLES}
@@ -477,8 +479,8 @@ def build(spkey):
     ret = conv_retraction(base_m)
     common = ["kind: print", "id: '*common*'", "values:",
               f"  default_material: Anycubic PLA @{label}"]
-    concrete = [f"id: {gid()}", "kind: print", "inherits:", "- '*common*'", "variants:",
-                f'- condition: printer.base_model == "{tok}"', f"  id: {gid()}", "  values:"]
+    concrete = [f"id: {gid(f'{tok}:print-doc')}", "kind: print", "inherits:", "- '*common*'", "variants:",
+                f'- condition: printer.base_model == "{tok}"', f"  id: {gid(f'{tok}:print:{tok}')}", "  values:"]
     concrete.append(emit_values(ret, 4))
     concrete.append("  variants:")
     for nz in NOZZLES:
@@ -489,7 +491,7 @@ def build(spkey):
         if m.get("max_layer_height"): nzvals["max_layer_height"] = num(first(m["max_layer_height"]))
         if m.get("min_layer_height"): nzvals["min_layer_height"] = num(first(m["min_layer_height"]))
         concrete.append(f"  - condition: tool.nozzle_diameter == {nz}")
-        concrete.append(f"    id: {gid()}")
+        concrete.append(f"    id: {gid(f'{tok}:print:nozzle:{nz}')}")
         concrete.append("    values:")
         if nzvals:
             concrete.append(emit_values(nzvals, 6))
@@ -497,7 +499,7 @@ def build(spkey):
         for d in sorted(procs[nz], key=lambda x: x["name"]):
             vals = conv_process(d)
             concrete.append(f"    - name: {leafname(d['name'], nz)}")
-            concrete.append(f"      id: {gid()}")
+            concrete.append(f"      id: {gid(f'{tok}:print:{nz}:{d['name']}')}")
             concrete.append("      values:")
             concrete.append(emit_values(vals, 8))
     write(os.path.join(vdir, f"preset-print-{slug}.yaml"),
